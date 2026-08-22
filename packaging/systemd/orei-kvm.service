@@ -1,0 +1,11 @@
+[Unit]
+Description=OREI KVM serial control daemon
+After=default.target
+
+[Service]
+ExecStart=%h/go/bin/orei-kvm daemon --tray
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

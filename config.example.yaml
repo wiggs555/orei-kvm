@@ -1,0 +1,16 @@
+# Example ~/.config/orei-kvm/config.yaml
+port: ""          # empty = auto-detect; e.g. /dev/ttyUSB0 or /dev/cu.usbserial-*
+baud: 115200
+my_host: 1        # set to 1 or 2 to match the HOST port this machine uses
+poll_interval: 1s
+socket: ~/.orei-kvm/orei-kvm.sock
+port_patterns:
+  - usbserial
+  - usbmodem
+  - ttyUSB
+  - ttyACM
+  - cu.usb
+  - FTDI
+  - CP210
+  - CH340
+  - PL2303

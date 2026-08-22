@@ -1,0 +1,7 @@
+.DS_Store
+/orei-kvm
+*.exe
+/dist/
+/bin/
+*.test
+*.out
