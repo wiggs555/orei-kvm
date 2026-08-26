@@ -76,6 +76,11 @@ port_patterns:
   - FTDI
   - CP210
   - CH340
+cycle_on_active: false   # set true on the Mac to cycle USB after a host switch
+cycle_side: rx
+cycle_port: 0            # 0 = all ports; prefer the trackpad's RX port
+cycle_delay: 15s
+cycle_restore: on
 ```
 
 Serial settings match the manual: **8N1**, commands terminated with `<CR><LF>`. Service port baud is fixed at 115200; phoenix RS-232 baud is configurable via `set baud`.
@@ -94,8 +99,8 @@ Serial settings match the manual: **8N1**, commands terminated with `<CR><LF>`. 
 | `orei-kvm host 1\|2\|get` | `set/get input` |
 | `orei-kvm usb5v [0\|1\|2]` | `get usb5v` |
 | `orei-kvm autoswitch on\|off\|get` | `set/get autoswitch` |
-| `orei-kvm tx-usbd get\|set` | `get/set tx usbd … power` |
-| `orei-kvm rx-usbd get\|set` | `get/set rx usbd … power` |
+| `orei-kvm tx-usbd get\|set\|cycle` | `get/set tx usbd … power` |
+| `orei-kvm rx-usbd get\|set\|cycle` | `get/set rx usbd … power` |
 | `orei-kvm hdbt-update` | `set hdbt update` |
 | `orei-kvm raw …` | arbitrary ASCII |
 
@@ -104,6 +109,21 @@ Most commands go through the daemon socket. Use `--direct --port /dev/ttyUSB0` f
 ## System tray
 
 The tray shows the active host (icon color + checkmark), polls once per second, and lets you switch Host 1 / Host 2 when the serial adapter is present. When this machine is inactive, switch actions are disabled — use the front-panel button or the other host.
+
+## USB power-cycle (macOS HID)
+
+After a host switch, some USB HID devices — notably an Apple Magic Trackpad — stay dark on macOS until the RX port is power-cycled. Keyboards usually switch without this.
+
+```bash
+# Same as: rx-usbd set 0 off && sleep 15 && rx-usbd set 0 on
+orei-kvm rx-usbd cycle
+orei-kvm --direct rx-usbd cycle 2 --delay 15s --restore on
+
+# Cycle after an explicit switch (only works if serial is still present)
+orei-kvm host 2 --cycle-rx
+```
+
+To do it automatically when **this** machine becomes the active host (recommended on the Mac), set `cycle_on_active: true` in config. Prefer `cycle_port` set to the trackpad's RX port so the keyboard stays up. Do not put the RS-232 adapter on a port you cycle.
 
 ## Mock mode (no hardware)
 

@@ -2,7 +2,9 @@ package device
 
 import (
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/wiggs555/orei-kvm/internal/protocol"
 )
@@ -149,6 +151,61 @@ func (d *Device) GetRXUSBD(port int) (string, error) {
 		return "", err
 	}
 	return d.raw(protocol.CmdGetRXUSBD(port))
+}
+
+// CycleRXUSBD force-offs an RX USB device port, waits, then restores power.
+// Port 0 means all RX ports. Used after a host switch so HID devices
+// (notably a Magic Trackpad on macOS) re-enumerate.
+func (d *Device) CycleRXUSBD(port int, off time.Duration, restore protocol.PowerMode) (string, error) {
+	if err := protocol.ValidateRXPort(port); err != nil {
+		return "", err
+	}
+	return d.cycleUSBD(true, port, off, restore)
+}
+
+// CycleTXUSBD is CycleRXUSBD for transmitter USB device ports.
+func (d *Device) CycleTXUSBD(port int, off time.Duration, restore protocol.PowerMode) (string, error) {
+	if err := protocol.ValidateTXPort(port); err != nil {
+		return "", err
+	}
+	return d.cycleUSBD(false, port, off, restore)
+}
+
+func (d *Device) cycleUSBD(rx bool, port int, off time.Duration, restore protocol.PowerMode) (string, error) {
+	if err := protocol.ValidateCycleRestore(restore); err != nil {
+		return "", err
+	}
+	if off < 0 {
+		return "", fmt.Errorf("cycle off duration must be >= 0")
+	}
+	var (
+		offResp, onResp string
+		err             error
+	)
+	if rx {
+		offResp, err = d.SetRXUSBD(port, protocol.PowerForceOff)
+	} else {
+		offResp, err = d.SetTXUSBD(port, protocol.PowerForceOff)
+	}
+	if err != nil {
+		return offResp, err
+	}
+	if off > 0 {
+		time.Sleep(off)
+	}
+	if rx {
+		onResp, err = d.SetRXUSBD(port, restore)
+	} else {
+		onResp, err = d.SetTXUSBD(port, restore)
+	}
+	out := strings.TrimSpace(offResp)
+	if onResp != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += onResp
+	}
+	return out, err
 }
 
 func (d *Device) HDBTUpdate() (string, error) {

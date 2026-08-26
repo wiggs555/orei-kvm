@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,19 @@ type Config struct {
 	// PortPatterns optional substrings used during auto-detect
 	// (matched against port name or description).
 	PortPatterns []string `yaml:"port_patterns"`
+
+	// CycleOnActive power-cycles USB device ports when this machine
+	// becomes the active host (after a switch). Helps macOS re-enumerate
+	// HID devices such as a Magic Trackpad.
+	CycleOnActive bool `yaml:"cycle_on_active"`
+	// CycleSide is "rx", "tx", or "both" (default rx).
+	CycleSide string `yaml:"cycle_side"`
+	// CyclePort is the USB device port to cycle; 0 means all ports.
+	CyclePort int `yaml:"cycle_port"`
+	// CycleDelay is how long ports stay off (default 15s).
+	CycleDelay time.Duration `yaml:"cycle_delay"`
+	// CycleRestore is the power mode after the off period: on or follow.
+	CycleRestore string `yaml:"cycle_restore"`
 }
 
 func Default() Config {
@@ -49,6 +63,11 @@ func Default() Config {
 			"CH340",
 			"PL2303",
 		},
+		CycleOnActive: false,
+		CycleSide:     "rx",
+		CyclePort:     0,
+		CycleDelay:    15 * time.Second,
+		CycleRestore:  "on",
 	}
 }
 
@@ -86,12 +105,17 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	type rawConfig struct {
-		Port         string        `yaml:"port"`
-		Baud         int           `yaml:"baud"`
-		MyHost       int           `yaml:"my_host"`
-		PollInterval time.Duration `yaml:"poll_interval"`
-		SocketPath   string        `yaml:"socket"`
-		PortPatterns []string      `yaml:"port_patterns"`
+		Port          string         `yaml:"port"`
+		Baud          int            `yaml:"baud"`
+		MyHost        int            `yaml:"my_host"`
+		PollInterval  time.Duration  `yaml:"poll_interval"`
+		SocketPath    string         `yaml:"socket"`
+		PortPatterns  []string       `yaml:"port_patterns"`
+		CycleOnActive *bool          `yaml:"cycle_on_active"`
+		CycleSide     string         `yaml:"cycle_side"`
+		CyclePort     *int           `yaml:"cycle_port"`
+		CycleDelay    *time.Duration `yaml:"cycle_delay"`
+		CycleRestore  string         `yaml:"cycle_restore"`
 	}
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -115,6 +139,21 @@ func Load() (Config, error) {
 	if len(raw.PortPatterns) > 0 {
 		cfg.PortPatterns = raw.PortPatterns
 	}
+	if raw.CycleOnActive != nil {
+		cfg.CycleOnActive = *raw.CycleOnActive
+	}
+	if raw.CycleSide != "" {
+		cfg.CycleSide = strings.ToLower(strings.TrimSpace(raw.CycleSide))
+	}
+	if raw.CyclePort != nil {
+		cfg.CyclePort = *raw.CyclePort
+	}
+	if raw.CycleDelay != nil {
+		cfg.CycleDelay = *raw.CycleDelay
+	}
+	if raw.CycleRestore != "" {
+		cfg.CycleRestore = strings.ToLower(strings.TrimSpace(raw.CycleRestore))
+	}
 	return cfg, nil
 }
 
@@ -127,20 +166,30 @@ func (c Config) Save() error {
 		return err
 	}
 	type out struct {
-		Port         string `yaml:"port"`
-		Baud         int    `yaml:"baud"`
-		MyHost       int    `yaml:"my_host"`
-		PollInterval string `yaml:"poll_interval"`
-		SocketPath   string `yaml:"socket"`
-		PortPatterns []string `yaml:"port_patterns"`
+		Port          string   `yaml:"port"`
+		Baud          int      `yaml:"baud"`
+		MyHost        int      `yaml:"my_host"`
+		PollInterval  string   `yaml:"poll_interval"`
+		SocketPath    string   `yaml:"socket"`
+		PortPatterns  []string `yaml:"port_patterns"`
+		CycleOnActive bool     `yaml:"cycle_on_active"`
+		CycleSide     string   `yaml:"cycle_side"`
+		CyclePort     int      `yaml:"cycle_port"`
+		CycleDelay    string   `yaml:"cycle_delay"`
+		CycleRestore  string   `yaml:"cycle_restore"`
 	}
 	data, err := yaml.Marshal(out{
-		Port:         c.Port,
-		Baud:         c.Baud,
-		MyHost:       c.MyHost,
-		PollInterval: c.PollInterval.String(),
-		SocketPath:   c.SocketPath,
-		PortPatterns: c.PortPatterns,
+		Port:          c.Port,
+		Baud:          c.Baud,
+		MyHost:        c.MyHost,
+		PollInterval:  c.PollInterval.String(),
+		SocketPath:    c.SocketPath,
+		PortPatterns:  c.PortPatterns,
+		CycleOnActive: c.CycleOnActive,
+		CycleSide:     c.CycleSide,
+		CyclePort:     c.CyclePort,
+		CycleDelay:    c.CycleDelay.String(),
+		CycleRestore:  c.CycleRestore,
 	})
 	if err != nil {
 		return err
@@ -160,4 +209,18 @@ func expandHome(p string) string {
 
 func EnsureRuntimeDir(socketPath string) error {
 	return os.MkdirAll(filepath.Dir(socketPath), 0o755)
+}
+
+// NormalizeCycleSide returns rx, tx, or both.
+func NormalizeCycleSide(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "rx":
+		return "rx", nil
+	case "tx":
+		return "tx", nil
+	case "both", "all":
+		return "both", nil
+	default:
+		return "", fmt.Errorf("cycle_side must be rx, tx, or both, got %q", s)
+	}
 }
