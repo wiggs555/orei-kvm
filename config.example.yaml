@@ -14,3 +14,14 @@ port_patterns:
   - CP210
   - CH340
   - PL2303
+
+# Power-cycle USB device ports when this machine becomes the active host.
+# Enable on the Mac so a Magic Trackpad re-enumerates after a host switch.
+# Prefer cycle_port set to the trackpad's RX port so the keyboard stays up.
+# Do not cycle the port that holds the RS-232 adapter.
+cycle_on_active: false
+cycle_side: rx        # rx | tx | both
+cycle_port: 0         # 0 = all ports on that side
+cycle_delay: 15s
+cycle_restore: on     # on | follow
+

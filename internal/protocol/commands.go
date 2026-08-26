@@ -79,6 +79,14 @@ func (p PowerMode) String() string {
 	}
 }
 
+// ValidateCycleRestore rejects force-off; a cycle must bring ports back up.
+func ValidateCycleRestore(m PowerMode) error {
+	if m != PowerFollow && m != PowerForceOn {
+		return fmt.Errorf("cycle restore must be follow or on, got %s", m)
+	}
+	return nil
+}
+
 func CmdHelp() string    { return "?" }
 func CmdHelpAlt() string { return "help" }
 func CmdGetFW() string   { return "get fw version" }

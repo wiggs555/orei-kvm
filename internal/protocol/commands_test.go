@@ -81,3 +81,15 @@ func TestPowerMode(t *testing.T) {
 		t.Fatalf("%v %v", m, err)
 	}
 }
+
+func TestValidateCycleRestore(t *testing.T) {
+	if err := ValidateCycleRestore(PowerForceOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCycleRestore(PowerFollow); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCycleRestore(PowerForceOff); err == nil {
+		t.Fatal("expected error restoring to off")
+	}
+}

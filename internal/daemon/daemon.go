@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,10 @@ type Daemon struct {
 
 	mu    sync.RWMutex
 	state ipc.State
+
+	cycleMu     sync.Mutex
+	sawInactive bool
+	cycling     bool
 
 	ln     net.Listener
 	cancel context.CancelFunc
@@ -123,11 +128,92 @@ func (d *Daemon) State() ipc.State {
 
 func (d *Daemon) setState(mut func(*ipc.State)) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	mut(&d.state)
 	d.state.UpdatedAt = time.Now()
 	d.state.MyHost = d.cfg.MyHost
 	d.state.PollEveryMS = int(d.cfg.PollInterval.Milliseconds())
+	st := d.state
+	d.mu.Unlock()
+	d.considerUSBCycle(st)
+}
+
+func (d *Daemon) considerUSBCycle(st ipc.State) {
+	inactive := !st.Connected || !st.IAmActive
+	d.cycleMu.Lock()
+	if inactive {
+		d.sawInactive = true
+		d.cycleMu.Unlock()
+		return
+	}
+	should := d.cfg.CycleOnActive && d.sawInactive && !d.cycling
+	if should {
+		d.sawInactive = false
+		d.cycling = true
+	}
+	d.cycleMu.Unlock()
+	if should {
+		go d.cycleUSBAfterSwitch()
+	}
+}
+
+func (d *Daemon) cycleUSBAfterSwitch() {
+	defer func() {
+		d.cycleMu.Lock()
+		d.cycling = false
+		d.cycleMu.Unlock()
+	}()
+	delay := d.cfg.CycleDelay
+	if delay < 0 {
+		delay = 15 * time.Second
+	}
+	side, err := config.NormalizeCycleSide(d.cfg.CycleSide)
+	if err != nil {
+		d.log.Printf("cycle_on_active: %v", err)
+		return
+	}
+	restore, err := protocol.ParsePowerMode(d.cfg.CycleRestore)
+	if err != nil {
+		d.log.Printf("cycle_on_active: invalid cycle_restore: %v", err)
+		return
+	}
+	if err := protocol.ValidateCycleRestore(restore); err != nil {
+		d.log.Printf("cycle_on_active: %v", err)
+		return
+	}
+	port := d.cfg.CyclePort
+	d.log.Printf("became active: power-cycling %s USB port %d (off %s, restore %s)", side, port, delay, restore)
+
+	doRX := side == "rx" || side == "both"
+	doTX := side == "tx" || side == "both"
+	if doRX {
+		if _, err := d.dev.SetRXUSBD(port, protocol.PowerForceOff); err != nil {
+			d.log.Printf("cycle_on_active: RX off: %v", err)
+			return
+		}
+	}
+	if doTX {
+		if _, err := d.dev.SetTXUSBD(port, protocol.PowerForceOff); err != nil {
+			d.log.Printf("cycle_on_active: TX off: %v", err)
+			return
+		}
+	}
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if doRX {
+		if resp, err := d.dev.SetRXUSBD(port, restore); err != nil {
+			d.log.Printf("cycle_on_active: RX restore: %v", err)
+		} else if resp != "" {
+			d.log.Printf("cycle_on_active: RX %s", strings.ReplaceAll(resp, "\n", " / "))
+		}
+	}
+	if doTX {
+		if resp, err := d.dev.SetTXUSBD(port, restore); err != nil {
+			d.log.Printf("cycle_on_active: TX restore: %v", err)
+		} else if resp != "" {
+			d.log.Printf("cycle_on_active: TX %s", strings.ReplaceAll(resp, "\n", " / "))
+		}
+	}
 }
 
 func (d *Daemon) tryConnect() {

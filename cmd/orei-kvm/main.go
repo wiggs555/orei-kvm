@@ -21,14 +21,14 @@ import (
 )
 
 var (
-	flagPort     string
-	flagBaud     int
-	flagMyHost   int
-	flagSocket   string
-	flagMock     bool
-	flagDirect   bool
-	flagYes      bool
-	cfg          config.Config
+	flagPort   string
+	flagBaud   int
+	flagMyHost int
+	flagSocket string
+	flagMock   bool
+	flagDirect bool
+	flagYes    bool
+	cfg        config.Config
 )
 
 func main() {
@@ -178,10 +178,38 @@ func cmdStatus() *cobra.Command {
 }
 
 func cmdHost() *cobra.Command {
+	var (
+		cycleRX      bool
+		cycleDelay   time.Duration
+		cyclePort    int
+		cycleRestore string
+	)
 	c := &cobra.Command{
 		Use:   "host",
 		Short: "Get or set the active USB host (1 or 2)",
 	}
+	c.PersistentFlags().BoolVar(&cycleRX, "cycle-rx", false, "power-cycle RX USB ports after switching")
+	c.PersistentFlags().DurationVar(&cycleDelay, "cycle-delay", 15*time.Second, "how long RX ports stay off when using --cycle-rx")
+	c.PersistentFlags().IntVar(&cyclePort, "cycle-port", -1, "RX USB port to cycle with --cycle-rx (0=all; default: config)")
+	c.PersistentFlags().StringVar(&cycleRestore, "cycle-restore", "", "restore mode after --cycle-rx: on|follow")
+
+	after := func(cmd *cobra.Command, host int) error {
+		if err := setHost(host); err != nil {
+			return err
+		}
+		if !cycleRX {
+			return nil
+		}
+		return runUSBCycle(usbCycleOpts{
+			rx:          true,
+			port:        cyclePort,
+			delay:       cycleDelay,
+			delaySet:    cmd.Flags().Changed("cycle-delay") || (cmd.Parent() != nil && cmd.Parent().PersistentFlags().Changed("cycle-delay")),
+			restore:     cycleRestore,
+			afterSwitch: true,
+		})
+	}
+
 	c.AddCommand(&cobra.Command{
 		Use:   "get",
 		Short: "Query active host",
@@ -206,18 +234,18 @@ func cmdHost() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return setHost(host)
+			return after(cmd, host)
 		},
 	})
 	c.AddCommand(&cobra.Command{
 		Use:   "1",
 		Short: "Switch to host 1",
-		RunE:  func(cmd *cobra.Command, args []string) error { return setHost(1) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return after(cmd, 1) },
 	})
 	c.AddCommand(&cobra.Command{
 		Use:   "2",
 		Short: "Switch to host 2",
-		RunE:  func(cmd *cobra.Command, args []string) error { return setHost(2) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return after(cmd, 2) },
 	})
 	return c
 }
@@ -355,6 +383,7 @@ func cmdTXUSBD() *cobra.Command {
 			return printRun(protocol.CmdSetTXUSBD(port, int(mode)))
 		},
 	})
+	c.AddCommand(cmdUSBDCycle(false))
 	return c
 }
 
@@ -392,6 +421,7 @@ func cmdRXUSBD() *cobra.Command {
 			return printRun(protocol.CmdSetRXUSBD(port, int(mode)))
 		},
 	})
+	c.AddCommand(cmdUSBDCycle(true))
 	return c
 }
 
@@ -465,12 +495,17 @@ func cmdConfig() *cobra.Command {
 		Use:   "show",
 		Short: "Show effective config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("port:          %q\n", cfg.Port)
-			fmt.Printf("baud:          %d\n", cfg.Baud)
-			fmt.Printf("my_host:       %d\n", cfg.MyHost)
-			fmt.Printf("poll_interval: %s\n", cfg.PollInterval)
-			fmt.Printf("socket:        %s\n", cfg.SocketPath)
-			fmt.Printf("port_patterns: %v\n", cfg.PortPatterns)
+			fmt.Printf("port:           %q\n", cfg.Port)
+			fmt.Printf("baud:           %d\n", cfg.Baud)
+			fmt.Printf("my_host:        %d\n", cfg.MyHost)
+			fmt.Printf("poll_interval:  %s\n", cfg.PollInterval)
+			fmt.Printf("socket:         %s\n", cfg.SocketPath)
+			fmt.Printf("port_patterns:  %v\n", cfg.PortPatterns)
+			fmt.Printf("cycle_on_active: %v\n", cfg.CycleOnActive)
+			fmt.Printf("cycle_side:     %s\n", cfg.CycleSide)
+			fmt.Printf("cycle_port:     %d\n", cfg.CyclePort)
+			fmt.Printf("cycle_delay:    %s\n", cfg.CycleDelay)
+			fmt.Printf("cycle_restore:  %s\n", cfg.CycleRestore)
 			return nil
 		},
 	})
@@ -487,6 +522,171 @@ func cmdConfig() *cobra.Command {
 		},
 	})
 	return c
+}
+
+type usbCycleOpts struct {
+	rx, tx      bool
+	port        int // -1 = config default
+	delay       time.Duration
+	delaySet    bool
+	restore     string
+	afterSwitch bool
+}
+
+func cmdUSBDCycle(rx bool) *cobra.Command {
+	var delay time.Duration
+	var restore string
+	side := "TX"
+	use := "cycle [port]"
+	if rx {
+		side = "RX"
+	}
+	c := &cobra.Command{
+		Use:   use,
+		Short: "Power-cycle " + side + " USB device ports (off, wait, restore)",
+		Long: `Force-off USB device port power, wait, then restore.
+
+After a host switch, some HID devices (notably an Apple Magic Trackpad on
+macOS) do not re-enumerate until the port is power-cycled. Keyboard-class
+devices often switch cleanly without this.
+
+Port 0 (default) cycles all ports on this side. Prefer the specific port the
+trackpad is on so the keyboard stays up. Do not cycle the port that holds
+the RS-232 adapter.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			port := -1
+			if len(args) == 1 {
+				var err error
+				port, err = strconv.Atoi(args[0])
+				if err != nil {
+					return err
+				}
+			}
+			return runUSBCycle(usbCycleOpts{
+				rx:       rx,
+				tx:       !rx,
+				port:     port,
+				delay:    delay,
+				delaySet: cmd.Flags().Changed("delay"),
+				restore:  restore,
+			})
+		},
+	}
+	c.Flags().DurationVar(&delay, "delay", 15*time.Second, "how long ports stay off")
+	c.Flags().StringVar(&restore, "restore", "", "power mode after cycle: on|follow (default on)")
+	return c
+}
+
+func runUSBCycle(opts usbCycleOpts) error {
+	port := opts.port
+	if port < 0 {
+		port = cfg.CyclePort
+	}
+	delay := opts.delay
+	if !opts.delaySet {
+		delay = cfg.CycleDelay
+	}
+	restoreStr := opts.restore
+	if restoreStr == "" {
+		restoreStr = cfg.CycleRestore
+	}
+	if restoreStr == "" {
+		restoreStr = "on"
+	}
+	restore, err := protocol.ParsePowerMode(restoreStr)
+	if err != nil {
+		return err
+	}
+	if err := protocol.ValidateCycleRestore(restore); err != nil {
+		return err
+	}
+	if opts.rx {
+		if err := protocol.ValidateRXPort(port); err != nil {
+			return err
+		}
+	}
+	if opts.tx {
+		if err := protocol.ValidateTXPort(port); err != nil {
+			return err
+		}
+	}
+
+	sides := make([]string, 0, 2)
+	if opts.rx {
+		sides = append(sides, "RX")
+	}
+	if opts.tx {
+		sides = append(sides, "TX")
+	}
+	fmt.Fprintf(os.Stderr, "power-cycling %s USB port %d: off %s, restore %s\n", strings.Join(sides, "+"), port, delay, restore)
+
+	err = doUSBCycle(opts.rx, opts.tx, port, delay, restore)
+	if err != nil && opts.afterSwitch {
+		fmt.Fprintf(os.Stderr, "host switched; USB cycle failed: %v\nrun on the active host: orei-kvm rx-usbd cycle\n(or set cycle_on_active: true in config)\n", err)
+		return nil
+	}
+	return err
+}
+
+func doUSBCycle(rx, tx bool, port int, delay time.Duration, restore protocol.PowerMode) error {
+	useDaemon := !flagDirect && ipc.IsDaemonUp(cfg.SocketPath)
+	if useDaemon {
+		runSide := func(isRX bool) error {
+			set := protocol.CmdSetTXUSBD
+			if isRX {
+				set = protocol.CmdSetRXUSBD
+			}
+			resp, err := run(set(port, int(protocol.PowerForceOff)))
+			if resp != "" {
+				fmt.Println(resp)
+			}
+			if err != nil {
+				return err
+			}
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			resp, err = run(set(port, int(restore)))
+			if resp != "" {
+				fmt.Println(resp)
+			}
+			return err
+		}
+		if rx {
+			if err := runSide(true); err != nil {
+				return err
+			}
+		}
+		if tx {
+			return runSide(false)
+		}
+		return nil
+	}
+
+	bus, closer, err := openDirect()
+	if err != nil {
+		return err
+	}
+	defer closer()
+	dev := device.New(bus)
+	if rx {
+		resp, err := dev.CycleRXUSBD(port, delay, restore)
+		if resp != "" {
+			fmt.Println(resp)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if tx {
+		resp, err := dev.CycleTXUSBD(port, delay, restore)
+		if resp != "" {
+			fmt.Println(resp)
+		}
+		return err
+	}
+	return nil
 }
 
 func simpleGet(use, cmdStr string) *cobra.Command {

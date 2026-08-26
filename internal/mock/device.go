@@ -177,10 +177,23 @@ func (d *Device) Handle(line string) string {
 	case strings.HasPrefix(cmd, "get rx usbd "):
 		var port int
 		fmt.Sscanf(cmd, "get rx usbd %d power", &port)
-		if port == 0 {
-			return "RX all USB device ports power follow USB host power"
+		mode := func(p int) string {
+			switch d.rxPower[p] {
+			case 0:
+				return "force off"
+			case 2:
+				return "force on"
+			default:
+				return "follow USB host power"
+			}
 		}
-		return fmt.Sprintf("RX USB device %d power follow USB host power", port)
+		if port == 0 {
+			return "RX all USB device ports power " + mode(1)
+		}
+		if port < 1 || port > 4 {
+			return "Invalid"
+		}
+		return fmt.Sprintf("RX USB device %d power %s", port, mode(port))
 	case cmd == "set hdbt update":
 		return "Hdbt update"
 	default:
