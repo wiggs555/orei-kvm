@@ -38,6 +38,10 @@ var (
 	cfg        config.Config
 )
 
+// version is the CLI release. The initial tree shipped unversioned; 0.1.1
+// is the first reported version, bumped for the macOS tray main-thread fix.
+const version = "0.1.1"
+
 func main() {
 	root := &cobra.Command{
 		Use:   "orei-kvm",
@@ -49,6 +53,7 @@ Because the serial adapter rides a switched USB port, it is only present
 on the currently selected host — the daemon polls for port presence and
 treats disappearance as "this machine is inactive".`,
 		SilenceUsage: true,
+		Version:      version,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			var err error
 			cfg, err = config.Load()
