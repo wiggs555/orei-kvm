@@ -336,11 +336,19 @@ func (d *Daemon) pollOnce() {
 		return
 	}
 
+	// An open port stays open. macOS often drops the callout device from the
+	// IOKit list while it is open, and a background poll next to AppKit can
+	// see an empty list. Either one made the tray report inactive while a
+	// fresh --direct command still opened the same adapter.
+	if d.client.Connected() {
+		d.refreshFromDevice("poll")
+		return
+	}
+
 	path := d.cfg.Port
 	if path == "" {
 		found, err := serial.FindPort("", d.cfg.PortPatterns)
 		if err != nil {
-			_ = d.client.Close()
 			d.setState(func(s *ipc.State) {
 				s.Connected = false
 				s.IAmActive = false
@@ -349,33 +357,14 @@ func (d *Daemon) pollOnce() {
 				} else {
 					s.ActiveHost = 1
 				}
-				s.LastError = "serial adapter not present (this host is inactive)"
+				s.LastError = err.Error()
 			})
 			return
 		}
 		path = found
-	} else if !serial.PortExists(path) {
-		_ = d.client.Close()
-		d.setState(func(s *ipc.State) {
-			s.Connected = false
-			s.IAmActive = false
-			if d.cfg.MyHost == 1 {
-				s.ActiveHost = 2
-			} else {
-				s.ActiveHost = 1
-			}
-			s.PortPath = path
-			s.LastError = "serial adapter not present (this host is inactive)"
-		})
-		return
-	}
-
-	if !d.client.Connected() || d.client.Path() != path {
 		d.cfg.Port = path
-		d.tryConnect()
-		return
 	}
-	d.refreshFromDevice("poll")
+	d.tryConnect()
 }
 
 func (d *Daemon) serve(ctx context.Context) {
