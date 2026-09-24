@@ -248,6 +248,11 @@ func (d *Daemon) tryConnect() {
 		})
 		return
 	}
+	// Remember the callout path so the next poll reads this device instead of
+	// searching again and closing it when enumeration hiccups.
+	if d.cfg.Port == "" {
+		d.cfg.Port = path
+	}
 	d.refreshFromDevice("connect")
 }
 

@@ -92,13 +92,16 @@ func FindPort(preferred string, patterns []string) (string, error) {
 }
 
 // PortExists reports whether a named port is currently enumerated.
+// A listing failure returns true: the caller should keep a live port open
+// and learn about a real disconnect from the next read, instead of treating
+// an enumeration glitch as "serial not present".
 func PortExists(name string) bool {
 	if name == "" {
 		return false
 	}
 	ports, err := ListPorts()
 	if err != nil {
-		return false
+		return true
 	}
 	for _, p := range ports {
 		if p.Name == name {
