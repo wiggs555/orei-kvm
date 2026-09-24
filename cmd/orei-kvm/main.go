@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,12 @@ import (
 	"github.com/wiggs555/orei-kvm/internal/serial"
 	"github.com/wiggs555/orei-kvm/internal/tray"
 )
+
+func init() {
+	// AppKit ([NSApp run] inside systray) aborts with SIGTRAP unless it runs
+	// on the process main thread. Pin this goroutine before it can migrate.
+	runtime.LockOSThread()
+}
 
 var (
 	flagPort   string
@@ -104,17 +111,13 @@ func cmdDaemon() *cobra.Command {
 		Use:   "daemon",
 		Short: "Run background daemon (serial polling + IPC)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if withTray {
+				// systray must run on this goroutine (the locked main thread).
+				return runDaemonAndTray()
+			}
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			d := daemon.New(cfg, flagMock)
-			if withTray {
-				go func() {
-					// Give the socket a moment to come up.
-					time.Sleep(200 * time.Millisecond)
-					_ = tray.Run(cfg.SocketPath, cfg.MyHost)
-					stop()
-				}()
-			}
 			return d.Start(ctx)
 		},
 	}
@@ -128,27 +131,47 @@ func cmdTray() *cobra.Command {
 		Short: "Show system tray (starts daemon if needed)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !ipc.IsDaemonUp(cfg.SocketPath) {
-				ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-				defer stop()
-				d := daemon.New(cfg, flagMock)
-				errCh := make(chan error, 1)
-				go func() { errCh <- d.Start(ctx) }()
-				deadline := time.Now().Add(3 * time.Second)
-				for time.Now().Before(deadline) {
-					if ipc.IsDaemonUp(cfg.SocketPath) {
-						break
-					}
-					time.Sleep(50 * time.Millisecond)
-				}
-				go func() {
-					_ = tray.Run(cfg.SocketPath, cfg.MyHost)
-					stop()
-				}()
-				return <-errCh
+				return runDaemonAndTray()
 			}
 			return tray.Run(cfg.SocketPath, cfg.MyHost)
 		},
 	}
+}
+
+// runDaemonAndTray starts the daemon on a background goroutine and blocks in
+// the tray on the caller, which must be the main OS thread on macOS.
+func runDaemonAndTray() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- daemon.New(cfg, flagMock).Start(ctx)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !ipc.IsDaemonUp(cfg.SocketPath) {
+		if time.Now().After(deadline) {
+			stop()
+			return fmt.Errorf("timed out waiting for daemon socket %s", cfg.SocketPath)
+		}
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("daemon exited before socket %s was ready", cfg.SocketPath)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	trayErr := tray.Run(cfg.SocketPath, cfg.MyHost)
+	stop()
+	dErr := <-errCh
+	if trayErr != nil {
+		return trayErr
+	}
+	return dErr
 }
 
 func cmdStatus() *cobra.Command {
