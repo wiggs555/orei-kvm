@@ -44,7 +44,7 @@ var (
 const trayChildEnv = "OREI_KVM_TRAY_CHILD"
 
 // version is the CLI release.
-const version = "0.1.2"
+const version = "0.1.3"
 
 func main() {
 	root := &cobra.Command{
