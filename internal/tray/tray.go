@@ -28,21 +28,12 @@ var iconUnknown []byte
 // if [NSApp run] is entered from any other thread.
 func Run(socketPath string, myHost int) error {
 	onReady := func() {
-		systray.SetTitle("OREI")
+		systray.SetTitle("OREI …")
 		systray.SetTooltip("OREI KVM")
 		systray.SetIcon(iconUnknown)
-		systray.SetOnClick(func(menu systray.IMenu) {
-			if menu != nil {
-				_ = menu.ShowMenu()
-			}
-		})
-		systray.SetOnRClick(func(menu systray.IMenu) {
-			if menu != nil {
-				_ = menu.ShowMenu()
-			}
-		})
-		systray.CreateMenu()
 
+		// Do not install click handlers. On macOS those detach the status menu
+		// (ShowMenu sets it, then clears it), so the polled host never stays visible.
 		mStatus := systray.AddMenuItem("Status: …", "Current KVM status")
 		mStatus.Disable()
 		systray.AddSeparator()
@@ -51,24 +42,12 @@ func Run(socketPath string, myHost int) error {
 		systray.AddSeparator()
 		mRefresh := systray.AddMenuItem("Refresh", "Re-query daemon / serial")
 		mQuit := systray.AddMenuItem("Quit", "Quit tray (daemon keeps running)")
+		systray.CreateMenu()
 
 		apply := func(st ipc.State) {
-			var label string
-			switch {
-			case st.Connected && st.ActiveHost > 0:
-				label = fmt.Sprintf("Active: Host %d", st.ActiveHost)
-				if st.IAmActive {
-					label += " (this machine)"
-				}
-			case !st.Connected:
-				label = fmt.Sprintf("Inactive — serial gone (likely Host %d)", st.ActiveHost)
-				if st.ActiveHost == 0 {
-					label = "Inactive — serial not present"
-				}
-			default:
-				label = "Status unknown"
-			}
+			label := statusLabel(st)
 			mStatus.SetTitle(label)
+			systray.SetTitle(barTitle(st))
 			systray.SetTooltip("OREI KVM — " + label)
 
 			mHost1.Uncheck()
@@ -100,7 +79,9 @@ func Run(socketPath string, myHost int) error {
 		refresh := func() {
 			resp, err := ipc.Call(socketPath, ipc.Request{Op: ipc.OpState})
 			if err != nil {
-				mStatus.SetTitle("Daemon not running")
+				mStatus.SetTitle("Daemon: " + err.Error())
+				systray.SetTitle("OREI ?")
+				systray.SetTooltip("OREI KVM — " + err.Error())
 				systray.SetIcon(iconInactive)
 				mHost1.Disable()
 				mHost2.Disable()
@@ -108,6 +89,11 @@ func Run(socketPath string, myHost int) error {
 			}
 			if resp.State != nil {
 				apply(*resp.State)
+				return
+			}
+			if resp.Error != "" {
+				mStatus.SetTitle(resp.Error)
+				systray.SetTitle("OREI ?")
 			}
 		}
 
@@ -140,4 +126,38 @@ func Run(socketPath string, myHost int) error {
 
 	systray.Run(onReady, func() {})
 	return nil
+}
+
+// statusLabel is the menu line for a daemon state snapshot.
+func statusLabel(st ipc.State) string {
+	switch {
+	case st.Connected && st.ActiveHost > 0:
+		label := fmt.Sprintf("Active: Host %d", st.ActiveHost)
+		if st.IAmActive {
+			label += " (this machine)"
+		}
+		return label
+	case !st.Connected && st.LastError != "":
+		return st.LastError
+	case !st.Connected && st.ActiveHost > 0:
+		return fmt.Sprintf("Inactive — serial gone (likely Host %d)", st.ActiveHost)
+	case !st.Connected:
+		return "Inactive — serial not present"
+	default:
+		return "Status unknown"
+	}
+}
+
+// barTitle is the menu-bar text, short enough to read without opening the menu.
+func barTitle(st ipc.State) string {
+	if st.Connected && st.ActiveHost > 0 {
+		if st.IAmActive {
+			return fmt.Sprintf("OREI H%d", st.ActiveHost)
+		}
+		return fmt.Sprintf("H%d", st.ActiveHost)
+	}
+	if !st.Connected {
+		return "OREI off"
+	}
+	return "OREI …"
 }

@@ -38,9 +38,8 @@ var (
 	cfg        config.Config
 )
 
-// version is the CLI release. The initial tree shipped unversioned; 0.1.1
-// is the first reported version, bumped for the macOS tray main-thread fix.
-const version = "0.1.1"
+// version is the CLI release.
+const version = "0.1.2"
 
 func main() {
 	root := &cobra.Command{
