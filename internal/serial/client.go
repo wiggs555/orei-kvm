@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,36 +60,82 @@ func ListPorts() ([]PortInfo, error) {
 	return out, nil
 }
 
-// FindPort picks a configured path or the first matching pattern.
+// FindPort picks a configured path or the best matching pattern.
+// On macOS both /dev/tty.* and /dev/cu.* exist for one adapter. cu.* (callout)
+// is the one that can be opened while the daemon is running; tty.* often
+// fails or blocks, which the tray then reports as inactive.
 func FindPort(preferred string, patterns []string) (string, error) {
 	ports, err := ListPorts()
 	if err != nil {
+		if preferred != "" {
+			return preferred, nil
+		}
 		return "", err
 	}
+	return pickPort(ports, preferred, patterns)
+}
+
+// pickPort chooses preferred, or the best pattern match. Callout devices
+// (cu.*) outrank dial-in devices (tty.*).
+func pickPort(ports []PortInfo, preferred string, patterns []string) (string, error) {
 	if preferred != "" {
 		for _, p := range ports {
-			if p.Name == preferred {
+			if samePort(p.Name, preferred) {
 				return p.Name, nil
 			}
 		}
-		// Still try opening preferred even if not enumerated
+		// Still try opening preferred even if not enumerated.
 		return preferred, nil
 	}
+	best := ""
+	bestRank := int(^uint(0) >> 1)
 	for _, p := range ports {
 		hay := strings.ToLower(p.Name + " " + p.Description)
+		matched := false
 		for _, pat := range patterns {
 			if pat == "" {
 				continue
 			}
 			if strings.Contains(hay, strings.ToLower(pat)) {
-				return p.Name, nil
+				matched = true
+				break
 			}
 		}
+		if !matched {
+			continue
+		}
+		if r := portRank(p.Name); r < bestRank {
+			best = p.Name
+			bestRank = r
+		}
+	}
+	if best != "" {
+		return best, nil
 	}
 	if len(ports) == 1 {
 		return ports[0].Name, nil
 	}
 	return "", fmt.Errorf("%w: no matching serial port (set port in config or pass --port)", ErrPortMissing)
+}
+
+func samePort(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return filepath.Base(a) == filepath.Base(b) && filepath.Base(a) != "" && filepath.Base(a) != "."
+}
+
+// portRank prefers macOS callout devices over dial-in devices.
+func portRank(name string) int {
+	base := strings.ToLower(filepath.Base(name))
+	switch {
+	case strings.HasPrefix(base, "cu.") || strings.Contains(base, "callout"):
+		return 0
+	case strings.HasPrefix(base, "tty.") || strings.HasPrefix(base, "tty"):
+		return 2
+	default:
+		return 1
+	}
 }
 
 // PortExists reports whether a named port is currently enumerated.
@@ -104,7 +151,7 @@ func PortExists(name string) bool {
 		return true
 	}
 	for _, p := range ports {
-		if p.Name == name {
+		if samePort(p.Name, name) {
 			return true
 		}
 	}
