@@ -24,6 +24,8 @@ var iconInactive []byte
 var iconUnknown []byte
 
 // Run starts the system tray UI, talking to an already-running daemon via socket.
+// On macOS this must be called from the main goroutine: AppKit traps (SIGTRAP)
+// if [NSApp run] is entered from any other thread.
 func Run(socketPath string, myHost int) error {
 	onReady := func() {
 		systray.SetTitle("OREI")
