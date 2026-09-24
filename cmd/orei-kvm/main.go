@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,8 +37,11 @@ var (
 	flagMock   bool
 	flagDirect bool
 	flagYes    bool
+	flagTray   bool
 	cfg        config.Config
 )
+
+const trayChildEnv = "OREI_KVM_TRAY_CHILD"
 
 // version is the CLI release.
 const version = "0.1.2"
@@ -53,6 +58,12 @@ on the currently selected host — the daemon polls for port presence and
 treats disappearance as "this machine is inactive".`,
 		SilenceUsage: true,
 		Version:      version,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !flagTray {
+				return cmd.Help()
+			}
+			return runDaemonAndTray()
+		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			var err error
 			cfg, err = config.Load()
@@ -81,6 +92,7 @@ treats disappearance as "this machine is inactive".`,
 	root.PersistentFlags().StringVar(&flagSocket, "socket", "", "daemon Unix socket path")
 	root.PersistentFlags().BoolVar(&flagMock, "mock", false, "use in-process mock device (no hardware)")
 	root.PersistentFlags().BoolVar(&flagDirect, "direct", false, "talk to serial directly (skip daemon)")
+	root.Flags().BoolVar(&flagTray, "tray", false, "run the daemon and system tray in the background")
 
 	root.AddCommand(
 		cmdDaemon(),
@@ -134,6 +146,9 @@ func cmdTray() *cobra.Command {
 		Use:   "tray",
 		Short: "Show system tray (starts daemon if needed)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := detachTrayFromTerminal(); err != nil {
+				return err
+			}
 			if !ipc.IsDaemonUp(cfg.SocketPath) {
 				return runDaemonAndTray()
 			}
@@ -145,6 +160,9 @@ func cmdTray() *cobra.Command {
 // runDaemonAndTray starts the daemon on a background goroutine and blocks in
 // the tray on the caller, which must be the main OS thread on macOS.
 func runDaemonAndTray() error {
+	if err := detachTrayFromTerminal(); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -176,6 +194,52 @@ func runDaemonAndTray() error {
 		return trayErr
 	}
 	return dErr
+}
+
+// shouldDetachTray reports whether this launch should fork a child and return
+// the terminal. Launchd and an already-detached child stay in the foreground
+// so the supervisor still tracks the process that owns the tray.
+func shouldDetachTray(child bool, stdoutIsTTY bool) bool {
+	return !child && stdoutIsTTY
+}
+
+func stdoutIsTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// detachTrayFromTerminal starts a new session running this same command and
+// exits the foreground process. The child keeps the tray on its main thread
+// and exits when the tray quits.
+func detachTrayFromTerminal() error {
+	if !shouldDetachTray(os.Getenv(trayChildEnv) == "1", stdoutIsTTY()) {
+		return nil
+	}
+	logPath := filepath.Join(filepath.Dir(cfg.SocketPath), "orei-kvm.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command(os.Args[0], os.Args[1:]...)
+	cmd.Env = append(os.Environ(), trayChildEnv+"=1")
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "orei-kvm tray running in background (pid %d, log %s)\n", cmd.Process.Pid, logPath)
+	os.Exit(0)
+	return nil
 }
 
 func cmdStatus() *cobra.Command {

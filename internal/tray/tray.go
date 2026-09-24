@@ -41,7 +41,7 @@ func Run(socketPath string, myHost int) error {
 		mHost2 := systray.AddMenuItemCheckbox("Host 2", "Switch to host 2", false)
 		systray.AddSeparator()
 		mRefresh := systray.AddMenuItem("Refresh", "Re-query daemon / serial")
-		mQuit := systray.AddMenuItem("Quit", "Quit tray (daemon keeps running)")
+		mQuit := systray.AddMenuItem("Quit", "Quit the tray")
 		systray.CreateMenu()
 
 		apply := func(st ipc.State) {
