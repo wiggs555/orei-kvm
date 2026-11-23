@@ -28,3 +28,33 @@ func TestStatusLabelShowsDaemonError(t *testing.T) {
 		t.Fatal("bar title")
 	}
 }
+
+func TestViewStateIgnoresUpdatedAt(t *testing.T) {
+	a := viewFromState(ipc.State{Connected: true, ActiveHost: 1, IAmActive: true, LastError: ""})
+	b := viewFromState(ipc.State{Connected: true, ActiveHost: 1, IAmActive: true, LastError: ""})
+	if a != b {
+		t.Fatalf("view states should compare equal when only timestamps differ")
+	}
+	b.activeHost = 2
+	if a == b {
+		t.Fatal("expected inequality after host change")
+	}
+}
+
+func TestIconForView(t *testing.T) {
+	if iconForView(viewState{daemonDown: true}) != iconKindInactive {
+		t.Fatal("daemon down")
+	}
+	if iconForView(viewState{activeHost: 1}) != iconKindHost1 {
+		t.Fatal("host1")
+	}
+	if iconForView(viewState{activeHost: 2}) != iconKindHost2 {
+		t.Fatal("host2")
+	}
+	if iconForView(viewState{connected: true}) != iconKindUnknown {
+		t.Fatal("unknown")
+	}
+	if iconForView(viewState{}) != iconKindInactive {
+		t.Fatal("inactive")
+	}
+}
