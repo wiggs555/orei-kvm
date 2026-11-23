@@ -23,6 +23,67 @@ var iconInactive []byte
 //go:embed icons/unknown.png
 var iconUnknown []byte
 
+type iconKind int
+
+const (
+	iconKindUnknown iconKind = iota
+	iconKindHost1
+	iconKindHost2
+	iconKindInactive
+)
+
+// viewState is the subset of daemon state that drives tray chrome.
+// Comparing this avoids re-issuing SetIcon/SetTitle/menu mutations every poll
+// when nothing visible changed — those native calls can retain memory in
+// AppKit / StatusNotifier over long uptimes.
+type viewState struct {
+	connected  bool
+	activeHost int
+	iAmActive  bool
+	lastError  string
+	daemonDown bool
+	daemonErr  string
+}
+
+func viewFromState(st ipc.State) viewState {
+	return viewState{
+		connected:  st.Connected,
+		activeHost: st.ActiveHost,
+		iAmActive:  st.IAmActive,
+		lastError:  st.LastError,
+	}
+}
+
+func iconForView(v viewState) iconKind {
+	if v.daemonDown {
+		return iconKindInactive
+	}
+	switch v.activeHost {
+	case 1:
+		return iconKindHost1
+	case 2:
+		return iconKindHost2
+	default:
+		if v.connected {
+			return iconKindUnknown
+		}
+		return iconKindInactive
+	}
+}
+
+func setTrayIcon(kind iconKind) {
+	switch kind {
+	case iconKindHost1:
+		systray.SetIcon(iconHost1)
+	case iconKindHost2:
+		systray.SetIcon(iconHost2)
+	case iconKindInactive:
+		systray.SetIcon(iconInactive)
+	default:
+		systray.SetIcon(iconUnknown)
+	}
+}
+
 // Run starts the system tray UI, talking to an already-running daemon via socket.
 // On macOS this must be called from the main goroutine: AppKit traps (SIGTRAP)
 // if [NSApp run] is entered from any other thread.
@@ -44,56 +105,82 @@ func Run(socketPath string, myHost int) error {
 		mQuit := systray.AddMenuItem("Quit", "Quit the tray")
 		systray.CreateMenu()
 
-		apply := func(st ipc.State) {
-			label := statusLabel(st)
-			mStatus.SetTitle(label)
-			systray.SetTitle(barTitle(st))
-			systray.SetTooltip("OREI KVM — " + label)
+		var (
+			prev     viewState
+			havePrev bool
+			prevIcon iconKind = iconKindUnknown
+		)
 
-			mHost1.Uncheck()
-			mHost2.Uncheck()
-			switch st.ActiveHost {
-			case 1:
-				mHost1.Check()
-				systray.SetIcon(iconHost1)
-			case 2:
-				mHost2.Check()
-				systray.SetIcon(iconHost2)
-			default:
-				if st.Connected {
-					systray.SetIcon(iconUnknown)
-				} else {
-					systray.SetIcon(iconInactive)
+		apply := func(v viewState) {
+			if havePrev && prev == v {
+				return
+			}
+
+			var label, title, tip string
+			if v.daemonDown {
+				label = "Daemon: " + v.daemonErr
+				title = "OREI ?"
+				tip = "OREI KVM — " + v.daemonErr
+			} else {
+				st := ipc.State{
+					Connected:  v.connected,
+					ActiveHost: v.activeHost,
+					IAmActive:  v.iAmActive,
+					LastError:  v.lastError,
+				}
+				label = statusLabel(st)
+				title = barTitle(st)
+				tip = "OREI KVM — " + label
+			}
+			mStatus.SetTitle(label)
+			systray.SetTitle(title)
+			systray.SetTooltip(tip)
+
+			icon := iconForView(v)
+			if !havePrev || icon != prevIcon {
+				setTrayIcon(icon)
+				prevIcon = icon
+			}
+
+			if !havePrev || prev.activeHost != v.activeHost || prev.daemonDown != v.daemonDown {
+				mHost1.Uncheck()
+				mHost2.Uncheck()
+				switch v.activeHost {
+				case 1:
+					mHost1.Check()
+				case 2:
+					mHost2.Check()
 				}
 			}
 
-			if st.Connected {
-				mHost1.Enable()
-				mHost2.Enable()
-			} else {
-				mHost1.Disable()
-				mHost2.Disable()
+			wantEnabled := v.connected && !v.daemonDown
+			wasEnabled := havePrev && prev.connected && !prev.daemonDown
+			if !havePrev || wantEnabled != wasEnabled {
+				if wantEnabled {
+					mHost1.Enable()
+					mHost2.Enable()
+				} else {
+					mHost1.Disable()
+					mHost2.Disable()
+				}
 			}
+
+			prev = v
+			havePrev = true
 		}
 
 		refresh := func() {
 			resp, err := ipc.Call(socketPath, ipc.Request{Op: ipc.OpState})
 			if err != nil {
-				mStatus.SetTitle("Daemon: " + err.Error())
-				systray.SetTitle("OREI ?")
-				systray.SetTooltip("OREI KVM — " + err.Error())
-				systray.SetIcon(iconInactive)
-				mHost1.Disable()
-				mHost2.Disable()
+				apply(viewState{daemonDown: true, daemonErr: err.Error()})
 				return
 			}
 			if resp.State != nil {
-				apply(*resp.State)
+				apply(viewFromState(*resp.State))
 				return
 			}
 			if resp.Error != "" {
-				mStatus.SetTitle(resp.Error)
-				systray.SetTitle("OREI ?")
+				apply(viewState{daemonDown: true, daemonErr: resp.Error})
 			}
 		}
 

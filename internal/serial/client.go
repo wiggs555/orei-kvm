@@ -299,6 +299,12 @@ func readAvailable(p serial.Port, wait time.Duration) ([]byte, error) {
 	return nil, nil
 }
 
+// maxResponseBytes caps how much ASCII a single command may buffer.
+// Without this, a misbehaving USB-serial adapter that returns data as fast as
+// we can Read (no idle gap) can grow the response buffer by gigabytes within
+// the 2s deadline — enough to push the daemon into multi-GB RSS.
+const maxResponseBytes = 64 * 1024
+
 func readResponse(p serial.Port, idle time.Duration) (string, error) {
 	var out bytes.Buffer
 	buf := make([]byte, 1024)
@@ -308,7 +314,17 @@ func readResponse(p serial.Port, idle time.Duration) (string, error) {
 	for time.Now().Before(deadline) {
 		n, err := p.Read(buf)
 		if n > 0 {
+			remaining := maxResponseBytes - out.Len()
+			if remaining <= 0 {
+				break
+			}
+			if n > remaining {
+				n = remaining
+			}
 			out.Write(buf[:n])
+			if out.Len() >= maxResponseBytes {
+				break
+			}
 			idleSinceData = true
 			// Keep reading while data is flowing; after a quiet idle window, stop.
 			_ = p.SetReadTimeout(idle)
